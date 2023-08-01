@@ -2,11 +2,14 @@ use std::path::Path;
 
 use async_recursion::async_recursion;
 use futures_util::future::join_all;
+use futures_util::StreamExt;
+use tokio::task::JoinHandle;
 use pacquet_package_json::DependencyGroup;
 use pacquet_registry::RegistryError;
 use pacquet_tarball::get_package_store_folder_name;
 
 use crate::PackageManagerError;
+#[feature(async_closure)]
 
 impl crate::PackageManager {
     /// Here is a brief overview of what this package does.
@@ -29,25 +32,8 @@ impl crate::PackageManager {
         let package_node_modules_path =
             self.config.virtual_store_dir.join(dependency_store_folder_name).join("node_modules");
 
-        self.tarball
-            .download_dependency(
-                &latest_version.dist.integrity,
-                latest_version.get_tarball_url(),
-                &package_node_modules_path.join(name),
-                &self.config.modules_dir.join(name),
-            )
+        self.install_package(name, latest_version.version.to_string().as_str(), &package_node_modules_path)
             .await?;
-
-        join_all(
-            latest_version
-                .get_dependencies(self.config.auto_install_peers)
-                .iter()
-                .map(|(name, version)| {
-                    self.install_package(name, version, &package_node_modules_path)
-                })
-                .collect::<Vec<_>>(),
-        )
-        .await;
 
         self.package_json.add_dependency(
             name,
@@ -72,7 +58,6 @@ impl crate::PackageManager {
             get_package_store_folder_name(name, &package_version.version.to_string());
         let package_node_modules_path =
             self.config.virtual_store_dir.join(dependency_store_folder_name).join("node_modules");
-
         // Make sure to lock the package's mutex so we don't install the same package's tarball
         // in different threads.
         let mutex_guard = package.mutex.lock().await;
@@ -87,17 +72,16 @@ impl crate::PackageManager {
             .await?;
 
         drop(mutex_guard);
-
-        join_all(
-            package_version
-                .get_dependencies(self.config.auto_install_peers)
-                .iter()
+        let dependencies = package_version
+            .get_dependencies(self.config.auto_install_peers);
+        let package_installs = futures::stream::iter(
+                dependencies.iter()
                 .map(|(name, version)| {
-                    self.install_package(name, version, &package_node_modules_path)
+                    self.clone().install_package(name, version, &package_node_modules_path)
                 })
-                .collect::<Vec<_>>(),
-        )
-        .await;
+        ).buffer_unordered(6).collect::<Vec<_>>();
+
+        package_installs.await;
 
         Ok(())
     }

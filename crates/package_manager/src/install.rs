@@ -1,6 +1,10 @@
+use std::ops::Deref;
+use std::sync::Arc;
 use futures_util::future::join_all;
+use futures_util::StreamExt;
 use pacquet_package_json::DependencyGroup;
 use pacquet_registry::RegistryError;
+use crate::PackageManager;
 
 impl crate::PackageManager {
     pub async fn install(
@@ -17,15 +21,18 @@ impl crate::PackageManager {
         }
         let dependencies = self.package_json.get_dependencies(dependency_groups);
 
-        join_all(
-            dependencies
-                .iter()
+        let package_installs = futures::stream::iter(
+            dependencies.iter()
                 .map(|(name, version)| {
-                    self.install_package(name, version, &self.config.modules_dir)
+
+                    tokio::spawn({
+                        async {
+                            self.install_package(name, version, &self.config.modules_dir)
+                        }
+                    })
                 })
-                .collect::<Vec<_>>(),
-        )
-        .await;
+        ).buffer_unordered(6).collect::<Vec<_>>();
+        package_installs.await;
 
         Ok(())
     }

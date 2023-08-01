@@ -9,6 +9,7 @@ use std::{
 };
 
 use libdeflater::{DecompressionError, Decompressor};
+use reqwest::Client;
 use ssri::{Algorithm, IntegrityOpts};
 use tar::Archive;
 use thiserror::Error;
@@ -43,7 +44,10 @@ impl Default for TarballManager {
 
 impl TarballManager {
     pub fn new() -> Self {
-        TarballManager { http_client: reqwest::Client::new() }
+        TarballManager { http_client: Client::builder()
+            .connection_verbose(true)
+            .http2_prior_knowledge()
+            .build().unwrap() }
     }
 
     #[instrument]
